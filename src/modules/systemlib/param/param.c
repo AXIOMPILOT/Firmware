@@ -1047,7 +1047,7 @@ param_export(int fd, bool only_unsaved)
 	param_lock_reader();
 
 	uint8_t bson_buffer[256];
-	bson_encoder_init_buf(&encoder, &bson_buffer, sizeof(bson_buffer));
+	bson_encoder_init_buf_file(&encoder, fd, &bson_buffer, sizeof(bson_buffer));
 
 	/* no modified parameters -> we are done */
 	if (param_values == NULL) {
@@ -1068,26 +1068,6 @@ param_export(int fd, bool only_unsaved)
 
 		const char *name = param_name(s->param);
 		const size_t size = param_size(s->param);
-
-		// check remaining buffer size and commit to disk
-		//  total size = strlen(name) + 1 (null char) + param size + 1 (bson header) + 1 (bson end)
-		// size is doubled (floats saved as doubles)
-		const size_t total_size = strlen(name) + 2 * size + 3;
-
-		if (encoder.bufpos > encoder.bufsize - total_size) {
-			// write buffer to disk and continue
-			debug("writing buffer (%d) to disk", encoder.bufpos);
-			int ret = write(fd, encoder.buf, encoder.bufpos);
-
-			if (ret == encoder.bufpos) {
-				// reset buffer to beginning and continue
-				encoder.bufpos = 0;
-
-			} else {
-				PX4_ERR("param write error %d %d", ret, encoder.bufpos);
-				goto out;
-			}
-		}
 
 		/* append the appropriate BSON type object */
 		switch (param_type(s->param)) {
@@ -1143,18 +1123,8 @@ param_export(int fd, bool only_unsaved)
 out:
 
 	if (result == 0) {
-		if (write(fd, encoder.buf, encoder.bufpos) == encoder.bufpos) {
-			// switch encoder back to fd and finalize
-			encoder.buf = NULL;
-			encoder.fd = fd;
-			result = bson_encoder_fini(&encoder);
-
-			if (result != PX4_OK) {
-				PX4_ERR("bson encoder finish failed");
-			}
-
-		} else {
-			PX4_ERR("param write error");
+		if (bson_encoder_fini(&encoder) != PX4_OK) {
+			PX4_ERR("bson encoder finish failed");
 		}
 	}
 

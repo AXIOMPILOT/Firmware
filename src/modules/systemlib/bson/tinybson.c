@@ -338,12 +338,28 @@ write_x(bson_encoder_t encoder, const void *p, size_t s)
 {
 	CODER_CHECK(encoder);
 
-	if (encoder->fd > -1) {
+	if (encoder->fd > -1 && encoder->buf == NULL) {
 		return (BSON_WRITE(encoder->fd, p, s) == (int)s) ? 0 : -1;
 	}
 
 	/* do we need to extend the buffer? */
 	while ((encoder->bufpos + s) > encoder->bufsize) {
+
+		if (encoder->fd > -1) {
+			// write to disk
+			debug("writing buffer (%d) to disk", encoder->bufpos);
+			int ret = BSON_WRITE(encoder->fd, encoder->buf, encoder->bufpos);
+
+			if (ret == encoder->bufpos) {
+				// reset buffer to beginning and continue
+				encoder->bufpos = 0;
+				break;
+
+			} else {
+				CODER_KILL(encoder, "file write error");
+			}
+		}
+
 		if (!encoder->realloc_ok) {
 			CODER_KILL(encoder, "fixed-size buffer overflow");
 		}
@@ -417,6 +433,22 @@ bson_encoder_init_file(bson_encoder_t encoder, int fd)
 }
 
 int
+bson_encoder_init_buf_file(bson_encoder_t encoder, int fd, void *buf, unsigned bufsize)
+{
+	encoder->fd = fd;
+	encoder->buf = (uint8_t *)buf;
+	encoder->bufpos = 0;
+	encoder->dead = false;
+	encoder->realloc_ok = false;
+
+	if (write_int32(encoder, 0)) {
+		CODER_KILL(encoder, "write error on document length");
+	}
+
+	return 0;
+}
+
+int
 bson_encoder_init_buf(bson_encoder_t encoder, void *buf, unsigned bufsize)
 {
 	encoder->fd = -1;
@@ -449,14 +481,18 @@ bson_encoder_fini(bson_encoder_t encoder)
 		CODER_KILL(encoder, "write error on document terminator");
 	}
 
-	/* store buffer length at the beginning of the buffer */
-	if (encoder->buf != NULL) {
+	if (encoder->fd > -1 && encoder->buf != NULL) {
+		/* sync buffer to disk */
+		BSON_WRITE(encoder->fd, encoder->buf, encoder->bufpos);
+
+	} else if (encoder->buf != NULL) {
+		/* sync buffer to disk */
 		int32_t len = bson_encoder_buf_size(encoder);
 		memcpy(encoder->buf, &len, sizeof(len));
 	}
-
-	/* sync file */
+	
 	if (encoder->fd > -1) {
+		/* sync file */
 		BSON_FSYNC(encoder->fd);
 	}
 
